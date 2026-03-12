@@ -8,6 +8,7 @@ Windows環境想定。config.json はこのスクリプトと同じディレク�
 """
 
 import json
+import sys
 import threading
 import time
 from pathlib import Path
@@ -29,6 +30,7 @@ MONITOR_INTERVAL = 0.1  # 監視間隔（秒）
 UI_UPDATE_INTERVAL_MS = 20  # UI更新間隔（ミリ秒）
 COUNTDOWN_SECONDS = 45.0
 RESET_DELAY_SECONDS = 3.0  # 0秒到達後、リセットまでの待機
+COOLDOWN_AFTER_EXPLODE = 30.0  # 0秒→45リセット後、赤色検知を無効にする時間
 WATCH_REGION_SIZE = 10  # 監視する矩形サイズ（中心からの半辺）
 HOTKEY_SAVE = keyboard.Key.f12
 
@@ -100,7 +102,11 @@ class SpikeTimerApp(ctk.CTk):
 
     def __init__(self):
         super().__init__()
-        self.base_dir = Path(__file__).resolve().parent
+        # PyInstallerでビルド時はexeのディレクトリを使用
+        if getattr(sys, "frozen", False):
+            self.base_dir = Path(sys.executable).resolve().parent
+        else:
+            self.base_dir = Path(__file__).resolve().parent
         self.config_data = load_config(self.base_dir)
 
         self.title("Valorant スパイクタイマー")
@@ -117,6 +123,7 @@ class SpikeTimerApp(ctk.CTk):
         self.show_saved_feedback = False
         self.saved_feedback_end_time = 0.0
         self.config_lock = threading.Lock()
+        self.cooldown_until = None  # 0秒→45リセット後の赤色検知無効期間
 
         self._setup_ui()
         self._start_monitor_thread()
@@ -193,7 +200,23 @@ class SpikeTimerApp(ctk.CTk):
                         if found:
                             break
 
-                    if found and not self.is_counting and not self.is_locked:
+                    now = time.perf_counter()
+                    in_cooldown = (
+                        self.cooldown_until is not None
+                        and now < self.cooldown_until
+                    )
+
+                    # カウント中に赤が消えた → 解除されたのでタイマー停止
+                    if self.is_counting and not found:
+                        self.after(0, self._stop_timer_defused)
+
+                    # 赤検知＆検知可能状態 → カウントダウン開始
+                    elif (
+                        found
+                        and not self.is_counting
+                        and not self.is_locked
+                        and not in_cooldown
+                    ):
                         self.is_counting = True
                         self.is_locked = True
                         self.countdown_start_time = time.perf_counter()
@@ -280,11 +303,22 @@ class SpikeTimerApp(ctk.CTk):
 
         self.after(UI_UPDATE_INTERVAL_MS, self._ui_update_tick)
 
-    def _reset_to_waiting(self):
-        """待機状態にリセット"""
+    def _stop_timer_defused(self):
+        """解除検知：タイマーを止めて45.00に戻す（クールダウンなし）"""
+        if not self.is_counting:  # 二重呼び出し防止
+            return
         self.remaining_seconds = COUNTDOWN_SECONDS
         self.is_locked = False
         self.is_counting = False
+        self.timer_label.configure(text="45.00")
+        self._update_background_for_phase(1)
+
+    def _reset_to_waiting(self):
+        """0秒到達後の待機状態リセット（30秒間は赤色検知しない）"""
+        self.remaining_seconds = COUNTDOWN_SECONDS
+        self.is_locked = False
+        self.is_counting = False
+        self.cooldown_until = time.perf_counter() + COOLDOWN_AFTER_EXPLODE
         self.timer_label.configure(text="45.00")
         self._update_background_for_phase(1)
 
