@@ -33,6 +33,7 @@ RESET_DELAY_SECONDS = 3.0  # 0秒到達後、リセットまでの待機
 COOLDOWN_AFTER_EXPLODE = 30.0  # 0秒→45リセット後、赤色検知を無効にする時間
 WATCH_REGION_SIZE = 10  # 監視する矩形サイズ（中心からの半辺）
 HOTKEY_SAVE = keyboard.Key.f12
+SAVED_FEEDBACK_DURATION = 3.0  # キャリブレーション保存後の表示秒数
 
 # フェーズ別背景色
 PHASE_COLORS = {
@@ -110,7 +111,7 @@ class SpikeTimerApp(ctk.CTk):
         self.config_data = load_config(self.base_dir)
 
         self.title("Valorant スパイクタイマー")
-        self.geometry("400x200")
+        self.geometry("420x260")
         self.resizable(True, True)
 
         # 状態変数
@@ -122,6 +123,7 @@ class SpikeTimerApp(ctk.CTk):
         self.monitor_running = False
         self.show_saved_feedback = False
         self.saved_feedback_end_time = 0.0
+        self.saved_calibration_info = None  # 保存時の座標・色を表示用に保持
         self.config_lock = threading.Lock()
         self.cooldown_until = None  # 0秒→45リセット後の赤色検知無効期間
 
@@ -147,11 +149,34 @@ class SpikeTimerApp(ctk.CTk):
 
         self.status_label = ctk.CTkLabel(
             self.timer_frame,
-            text="待機中 - F12で座標・色をキャリブレーション",
-            font=ctk.CTkFont(size=12),
+            text="スパイクの赤アイコンにマウスを合わせて F12 を押す",
+            font=ctk.CTkFont(size=13),
             text_color="white",
         )
-        self.status_label.pack(pady=(0, 10))
+        self.status_label.pack(pady=(0, 5))
+
+        # キャリブレーション結果表示用（保存時に表示）
+        self.saved_detail_frame = ctk.CTkFrame(self.timer_frame, fg_color="transparent")
+        self.saved_detail_label = ctk.CTkLabel(
+            self.saved_detail_frame,
+            text="",
+            font=ctk.CTkFont(size=14),
+            text_color="#AAAAAA",
+        )
+        self.saved_detail_label.pack(side="left", padx=(0, 10))
+        self.color_preview_box = ctk.CTkFrame(
+            self.saved_detail_frame,
+            width=48,
+            height=24,
+            fg_color="#333333",
+            corner_radius=4,
+            border_width=2,
+            border_color="#666666",
+        )
+        self.color_preview_box.pack(side="left")
+        self.color_preview_box.pack_propagate(False)
+        self.saved_detail_frame.pack(pady=(0, 10))
+        self.saved_detail_frame.pack_forget()  # 初期は非表示
 
     def _update_background_for_phase(self, phase: int):
         """フェーズに応じて背景色を更新"""
@@ -257,7 +282,8 @@ class SpikeTimerApp(ctk.CTk):
 
         if save_config(self.base_dir, new_config):
             self.show_saved_feedback = True
-            self.saved_feedback_end_time = time.perf_counter() + 1.0
+            self.saved_feedback_end_time = time.perf_counter() + SAVED_FEEDBACK_DURATION
+            self.saved_calibration_info = {"x": x, "y": y, "r": r, "g": g, "b": b}
 
     def _start_ui_update_loop(self):
         """UI更新ループ（10〜30ms間隔）"""
@@ -267,13 +293,36 @@ class SpikeTimerApp(ctk.CTk):
         """1ティック分のUI更新"""
         now = time.perf_counter()
 
-        # SAVED! フィードバック表示
+        # SAVED! フィードバック表示（座標・色を明示）
         if self.show_saved_feedback:
             if now < self.saved_feedback_end_time:
                 self.timer_label.configure(text="SAVED!")
+                if self.saved_calibration_info:
+                    info = self.saved_calibration_info
+                    self.status_label.configure(
+                        text="保存しました！",
+                        text_color="#4ADE80",
+                        font=ctk.CTkFont(size=14, weight="bold"),
+                    )
+                    self.saved_detail_label.configure(
+                        text=f"X:{info['x']} Y:{info['y']}  RGB({info['r']},{info['g']},{info['b']})"
+                    )
+                    hex_color = "#{:02X}{:02X}{:02X}".format(
+                        info["r"], info["g"], info["b"]
+                    )
+                    self.color_preview_box.configure(fg_color=hex_color)
+                    self.saved_detail_frame.pack(pady=(0, 10))
             else:
                 self.show_saved_feedback = False
+                self.saved_calibration_info = None
                 self.timer_label.configure(text=f"{self.remaining_seconds:.2f}")
+                self.status_label.configure(
+                    text="スパイクの赤アイコンにマウスを合わせて F12 を押す",
+                    text_color="white",
+                    font=ctk.CTkFont(size=13),
+                )
+                self.saved_detail_frame.pack_forget()
+                self.color_preview_box.configure(fg_color="#333333")
             self.after(UI_UPDATE_INTERVAL_MS, self._ui_update_tick)
             return
 
